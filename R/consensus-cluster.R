@@ -8,11 +8,17 @@
 #' @param B Number of iterations.
 #' @param pItem Proportion of items sampled at each iteration.
 #' @param clMethod Clustering algorithm. Can be "hclust" for hierarchical
-#' clustering, "kmeans" for k-means clustering, or "pam" for partitioning around
-#' medoids. Default is "hclust". However, if the data contain at least one
-#' covariate that is a factor, the default clustering algorithm is "pam".
+#' clustering, "kmeans" for k-means clustering, "pam" for partitioning around
+#' medoids, "sparse-kmeans" for sparse k-means clustering or "sparse-hclust"
+#' for sparse hierarchical clustering. Default is "hclust". However, if the data
+#' contain at least one covariate that is a factor, the default clustering
+#' algorithm is "pam".
 #' @param hclustMethod Hierarchical clustering method. Default is "average". For
 #' more details see \code{?hclust}.
+#' @param sparseKmeansPenalty If the selected clustering method is
+#' "sparse-kmeans", this is the value of the parameter "wbounds" of the
+#' "KMeansSparseCluster" function. The default value is the square root of the
+#' number of variables.
 #' @param maxIterKM Number of iterations for the k-means clustering algorithm.
 #' @param dist Distance used for hierarchical clustering. Can be "pearson" (for
 #' 1 - Pearson correlation), "spearman" (for 1- Spearman correlation), any of
@@ -26,6 +32,9 @@
 #' @references Monti, S., Tamayo, P., Mesirov, J. and Golub, T., 2003. Consensus
 #' clustering: a resampling-based method for class discovery and visualization
 #' of gene expression microarray data. Machine learning, 52(1-2), pp.91-118.
+#' @references Witten, D.M. and Tibshirani, R., 2010. A framework for feature
+#' selection in clustering. Journal of the American Statistical Association,
+#' 105(490), pp.713-726.
 #' @examples
 #' # Load one dataset with 300 observations, 2 variables, 6 clusters
 #' data <- as.matrix(read.csv(system.file("extdata", "dataset1.csv",
@@ -43,6 +52,7 @@ consensusCluster <-
            clMethod = "hclust",
            dist = "euclidean",
            hclustMethod = "average",
+           sparseKmeansPenalty = NULL,
            maxIterKM = 1000) {
 
     containsFactors <- 0
@@ -86,27 +96,33 @@ consensusCluster <-
             # If the chosen clustering method is PAM or there is at least one
             # covariate that is a factor
             if (clMethod == "pam" | containsFactors) {
-                if (is.double(dist) & isSymmetric(dist)) {
-                  distances <- stats::as.dist(dist[items, items])
-                } else if (dist == "cor") {
-                  distances <- stats::as.dist(1 - stats::cor(t(data[items, ])))
-                } else if (dist == "binary") {
-                  distances <- stats::dist(data[items, ], method = dist)
-                } else if (dist == "gower") {
-                  distances <- cluster::daisy(data[items, ], metric = "gower")
-                } else {
-                  stop("Distance not recognized. If method is `pam`, distance
-                  must be one of `cor`, `binary`, `gower` or the symmetric
-                  matrix of distances.")
-                }
-
-                # Apply pam to the subsample and extract cluster labels
+              if (is.double(dist) & isSymmetric(dist)) {
+                distances <- stats::as.dist(dist[items, items])
+              } else if (dist == "cor") {
+                distances <- stats::as.dist(1 - stats::cor(t(data[items, ])))
+              } else if (dist == "binary") {
+                distances <- stats::dist(data[items, ], method = dist)
+              } else if (dist == "gower") {
+                distances <- cluster::daisy(data[items, ], metric = "gower")
+              } else {
+                stop("Distance not recognized. If method is `pam`, distance
+                must be one of `cor`, `binary`, `gower` or the symmetric
+                matrix of distances.")
+              }
+              # Apply pam to the subsample and extract cluster labels
                 cl <- cluster::pam(distances, K)$clustering
             } else if (clMethod == "kmeans" & !is.null(data)) {
-                # Apply k-means to the subsample and extract cluster labels
+              # Apply k-means to the subsample and extract cluster labels
                 cl <- stats::kmeans(
-                  data[items, ], K, iter.max = maxIterKM)$cluster
-            } else if (clMethod == "hclust") {
+                  data[items, ], K, iter.max = maxIterKM, nstart = 20)$cluster
+            } else if (clMethod == "sparse-kmeans" & !is.null(data)) {
+              if(is.null(sparseKmeansPenalty))
+                sparseKmeansPenalty = sqrt(P)
+              cat("sparseKmeansPenalty", sparseKmeansPenalty, "\n")
+              # Apply sparse k-means to the subsample and extract cluster labels
+              cl <- sparcl::KMeansSparseCluster(
+                data[items,], K, wbounds = sparseKmeansPenalty)[[1]]$Cs
+            } else if (clMethod == "hclust" | clMethod == "sparse-hclust") {
                 if (dist == "pearson" | dist == "spearman") {
                   pearsonCor <- stats::cor(t(data[items, ]), method = dist)
                   distances <- stats::as.dist(1 - pearsonCor)
@@ -116,14 +132,19 @@ consensusCluster <-
                   # Calculate pairwise distances between observations
                   distances <- stats::dist(data[items, ], method = dist)
                 }
-
                 # Apply hierarchical clustering to the subsample
-                hClustering <- stats::hclust(distances, method = hclustMethod)
+                if(clMethod == "hclust"){
+                  hClustering <- stats::hclust(distances, method = hclustMethod)
+                } else {
+                  hClustering <- sparcl::HierarchicalSparseCluster(
+                    dists = as.matrix(distances), method = "average",
+                    wbound = 10)$hc
+                }
                 cl <- stats::cutree(hClustering, K)
             } else {
                 stop("Clustering algorithm name not recognised. Please choose
-                either `kmeans` for k-means clustering or `hclust` for hierarchical
-                clustering.")
+                     one of `kmeans`, `hclust`, `pam`, `sparse-kmeans`,
+                     `sparse-hclust`.")
             }
 
             # Update matrix containing counts of number of times each pair has
